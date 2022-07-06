@@ -86,6 +86,21 @@ RUN apt-get -y install crystal --assume-yes
 # Haskell
 RUN curl -sL "https://get.haskellstack.org/" | sh
 
+# PHP
+## for apt to be noninteractive
+ENV DEBIAN_FRONTEND noninteractive
+ENV DEBCONF_NONINTERACTIVE_SEEN true
+
+RUN echo "tzdata tzdata/Areas select Europe" > /tmp/preseed.txt; \
+    echo "tzdata tzdata/Zones/Europe select Berlin" >> /tmp/preseed.txt; \
+    debconf-set-selections /tmp/preseed.txt && \
+    apt-get update && \
+    apt-get install -y tzdata
+
+RUN export LANG=C.UTF-8 ; add-apt-repository ppa:ondrej/php
+RUN apt-get -y update
+RUN apt-get -y install php7.4
+
 ENV PATH="${workdir}/node_modules/.bin:${PATH}"
 
 COPY . .

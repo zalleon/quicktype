@@ -17,6 +17,8 @@ test/fixtures/java-lombok/target
 build/*/dist
 build/*/node_modules
 
+gen/
+
 *.log
 /test/elm/libsysconfcpus/
 /test/runs

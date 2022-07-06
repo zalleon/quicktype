@@ -1,6 +1,6 @@
-import { TypeKind, Type, ClassType, EnumType, UnionType, ClassProperty } from "../Type";
-import { matchType, nullableFromUnion, removeNullFromUnion } from "../TypeUtils";
-import { Name, DependencyName, Namer, funPrefixNamer } from "../Naming";
+import {TypeKind, Type, ClassType, EnumType, UnionType, ClassProperty} from "../Type";
+import {matchType, nullableFromUnion, removeNullFromUnion} from "../TypeUtils";
+import {Name, DependencyName, Namer, funPrefixNamer} from "../Naming";
 import {
     legalizeCharacters,
     isLetterOrUnderscore,
@@ -12,18 +12,19 @@ import {
     allUpperWordStyle,
     camelCase,
 } from "../support/Strings";
-import { assert, defined } from "../support/Support";
-import { StringOption, BooleanOption, Option, OptionValues, getOptionValues } from "../RendererOptions";
-import { Sourcelike, maybeAnnotated, modifySource } from "../Source";
-import { anyTypeIssueAnnotation, nullTypeIssueAnnotation } from "../Annotation";
-import { TargetLanguage } from "../TargetLanguage";
-import { ConvenienceRenderer } from "../ConvenienceRenderer";
-import { RenderContext } from "../Renderer";
+import {assert, defined} from "../support/Support";
+import {StringOption, BooleanOption, Option, OptionValues, getOptionValues} from "../RendererOptions";
+import {Sourcelike, maybeAnnotated, modifySource} from "../Source";
+import {anyTypeIssueAnnotation, nullTypeIssueAnnotation} from "../Annotation";
+import {TargetLanguage} from "../TargetLanguage";
+import {ConvenienceRenderer} from "../ConvenienceRenderer";
+import {RenderContext} from "../Renderer";
 
 export const goOptions = {
     justTypes: new BooleanOption("just-types", "Plain types only", false),
     justTypesAndPackage: new BooleanOption("just-types-and-package", "Plain types with package only", false),
     packageName: new StringOption("package", "Generated package name", "NAME", "main"),
+    sdkPackage: new StringOption("sdk-package", "Generated sdk package name", "PATH", ""),
     multiFileOutput: new BooleanOption("multi-file-output", "Renders each top-level object in its own Go file", false),
 };
 
@@ -33,7 +34,13 @@ export class GoTargetLanguage extends TargetLanguage {
     }
 
     protected getOptions(): Option<any>[] {
-        return [goOptions.justTypes, goOptions.packageName, goOptions.multiFileOutput, goOptions.justTypesAndPackage];
+        return [
+            goOptions.justTypes,
+            goOptions.packageName,
+            goOptions.sdkPackage,
+            goOptions.multiFileOutput,
+            goOptions.justTypesAndPackage
+        ];
     }
 
     get supportsUnionsWithBothNumberTypes(): boolean {
@@ -239,22 +246,36 @@ export class GoRenderer extends ConvenienceRenderer {
 
         this.emitPackageDefinitons(true);
 
-        const unmarshalName = defined(this._topLevelUnmarshalNames.get(name));
         if (this.namedTypeToNameForTopLevel(t) === undefined) {
             this.emitLine("type ", name, " ", this.goType(t));
         }
 
         if (this._options.justTypes || this._options.justTypesAndPackage) return;
 
+        this.emitLine(["const ", name, "MessageName = \"", name.firstProposedName(this.names), "\""]);
+
         this.ensureBlankLine();
-        this.emitFunc([unmarshalName, "(data []byte) (", name, ", error)"], () => {
-            this.emitLine("var r ", name);
-            this.emitLine("err := json.Unmarshal(data, &r)");
-            this.emitLine("return r, err");
+        this.emitFunc(["(m *", name, ") GetMessageName() string"], () => {
+            this.emitLine(["return ", name, "MessageName"]);
         });
+
         this.ensureBlankLine();
-        this.emitFunc(["(r *", name, ") Marshal() ([]byte, error)"], () => {
-            this.emitLine("return json.Marshal(r)");
+        this.emitFunc(["(m *", name, ") Decode(data []byte) error"], () => {
+            this.emitBlock(["if err := json.Unmarshal(data, m); err != nil"], () => {
+                this.emitLine("return fmt.Errorf(\"json unmarshal for message %s failed, %w\", ", name, "MessageName, err)");
+            });
+            this.ensureBlankLine();
+            this.emitLine("return nil");
+        });
+
+        this.ensureBlankLine();
+        this.emitFunc(["(m *", name, ") Encode() ([]byte, error)"], () => {
+            this.emitLine("payload, err := json.Marshal(m)");
+            this.emitBlock(["if err != nil"], () => {
+                this.emitLine("return nil, fmt.Errorf(\"json marshal %s message error. %w\", m.GetMessageName(), err)");
+            });
+            this.ensureBlankLine();
+            this.emitLine("return payload, nil");
         });
         this.endFile();
     }
@@ -384,12 +405,12 @@ export class GoRenderer extends ConvenienceRenderer {
     private emitSingleFileHeaderComments(): void {
         this.emitLineOnce("// This file was generated from JSON Schema using quicktype, do not modify it directly.");
         this.emitLineOnce("// To parse and unparse this JSON data, add this code to your project and do:");
-        this.forEachTopLevel("none", (_: Type, name: Name) => {
-            this.emitLine("//");
-            const ref = modifySource(camelCase, name);
-            this.emitLine("//    ", ref, ", err := ", defined(this._topLevelUnmarshalNames.get(name)), "(bytes)");
-            this.emitLine("//    bytes, err = ", ref, ".Marshal()");
-        });
+        // this.forEachTopLevel("none", (_: Type, name: Name) => {
+        //     this.emitLine("//");
+        //     const ref = modifySource(camelCase, name);
+        //     this.emitLine("//    ", ref, ", err := ", defined(this._topLevelUnmarshalNames.get(name)), "(bytes)");
+        //     this.emitLine("//    bytes, err = ", ref, ".Marshal()");
+        // });
     }
 
     private emitPackageDefinitons(includeJSONEncodingImport: boolean): void {
@@ -409,6 +430,7 @@ export class GoRenderer extends ConvenienceRenderer {
 
             if (includeJSONEncodingImport) {
                 this.emitLineOnce('import "encoding/json"');
+                this.emitLineOnce('import "fmt"');
             }
             this.ensureBlankLine();
         }
@@ -541,6 +563,91 @@ func marshalUnion(pi *int64, pf *float64, pb *bool, ps *string, haveArray bool, 
         }
     }
 
+    private emitEncoder(): void {
+        this.startFile("encoder");
+
+        this.emitLine(["package ", this._options.packageName]);
+        this.ensureBlankLine();
+        this.emitLine([`import "fmt"`]);
+        this.ensureBlankLine();
+        this.emitLine(`var ErrNotSupportedObject = fmt.Errorf("object is not supportable, must be self encodable")`);
+        this.ensureBlankLine();
+        this.emitLine("type Encoder struct{}");
+        this.ensureBlankLine();
+        this.emitFunc(["NewEncoder() *Encoder"], () => {
+            this.emitLine("return &Encoder{}");
+        });
+        this.ensureBlankLine();
+        this.emitFunc(["(e *Encoder) Encode(v interface{}) ([]byte, error)"], () => {
+            this.emitLine(["switch msg := v.(type) {"]);
+            this.forEachTopLevel(
+                "none",
+                (_t, name) => {
+                    this.emitLine(["case ", name, ":"]);
+                    this.indent(() => {
+                        this.emitLine("res, err := msg.Encode()");
+                        this.emitBlock(["if err != nil"], () => {
+                            this.emitLine([`return nil, fmt.Errorf("encoding of bus message %s, %w", msg.GetMessageName(), err)`]);
+                        });
+                        this.ensureBlankLine();
+                        this.emitLine("return res, nil");
+                    });
+                },
+            );
+            this.emitLine("default:");
+            this.indent(() => {
+                this.emitLine("return nil, ErrNotSupportedObject");
+            });
+            this.emitLine("}");
+        });
+
+        this.endFile();
+    }
+
+    private emitDecoder(): void {
+        this.startFile("decoder");
+
+        this.emitLine(["package ", this._options.packageName]);
+        this.ensureBlankLine();
+        this.emitLine([`import "fmt"`]);
+        if (this._options.sdkPackage !== "") {
+            this.emitLine([`import "`, this._options.sdkPackage, `"`]);
+        }
+        this.ensureBlankLine();
+        this.emitLine(`var ErrUnexpectedMessage = fmt.Errorf("unexpected message")`);
+        this.ensureBlankLine();
+        this.emitLine("type Decoder struct{}");
+        this.ensureBlankLine();
+        this.emitFunc(["NewDecoder() *Decoder"], () => {
+            this.emitLine("return &Decoder{}");
+        });
+        this.ensureBlankLine();
+        this.emitFunc(["(e *Decoder) Decode(messageName string, payload []byte) (sdk.MessageInterface, error)"], () => {
+            this.emitLine(["switch messageName {"]);
+            this.forEachTopLevel(
+                "none",
+                (_t, name) => {
+                    this.emitLine(["case ", name, "MessageName:"]);
+                    this.indent(() => {
+                        this.emitLine(["m := ", name, "{}"]);
+                        this.emitBlock(["if err := m.Decode(payload); err != nil"], () => {
+                            this.emitLine([`return nil, fmt.Errorf("decode message %s failed. %w", messageName, err)`]);
+                        });
+                        this.ensureBlankLine();
+                        this.emitLine("return m, nil");
+                    });
+                },
+            );
+            this.emitLine("default:");
+            this.indent(() => {
+                this.emitLine(`return nil, fmt.Errorf("%w, name %s", ErrUnexpectedMessage, messageName)`);
+            });
+            this.emitLine("}");
+        });
+
+        this.endFile();
+    }
+
     protected emitSourceStructure(): void {
         if (
             this._options.multiFileOutput === false &&
@@ -561,6 +668,9 @@ func marshalUnion(pi *int64, pf *float64, pb *bool, ps *string, haveArray bool, 
         this.forEachObject("leading-and-interposing", (c: ClassType, className: Name) => this.emitClass(c, className));
         this.forEachEnum("leading-and-interposing", (u: EnumType, enumName: Name) => this.emitEnum(u, enumName));
         this.forEachUnion("leading-and-interposing", (u: UnionType, unionName: Name) => this.emitUnion(u, unionName));
+
+        this.emitEncoder();
+        this.emitDecoder();
 
         if (this._options.justTypes || this._options.justTypesAndPackage) {
             return;

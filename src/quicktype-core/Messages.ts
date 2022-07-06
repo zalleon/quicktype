@@ -195,6 +195,9 @@ export function messageError<N extends ErrorKinds>(kind: N, properties: ErrorPro
         userMessage = userMessage.replace("${" + name + "}", value);
     }
 
+    // TODO: remove
+    console.trace();
+
     throw new QuickTypeError(message, kind, userMessage, properties);
 }
 
