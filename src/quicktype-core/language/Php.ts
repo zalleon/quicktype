@@ -116,7 +116,7 @@ export class PhpRenderer extends ConvenienceRenderer {
         const parts = path.split("\\");
 
         if (parts.length > 0) {
-            return parts[-1];
+            return parts[parts.length-1];
         }
 
         return path;
@@ -928,14 +928,15 @@ export class PhpRenderer extends ConvenienceRenderer {
         }
 
         if (impl.length > 0) {
-            impl.unshift(["implements "]);
+            impl.unshift([" implements "]);
         }
 
         this.emitFileHeader(
             [className, this._hydratorClassName],
             [
+                ...imports,
                 "RuntimeException",
-                "stdClass"
+                "stdClass",
             ]);
 
         this.emitBlock(["final class ", className, this._hydratorClassName, ...impl], () => {
